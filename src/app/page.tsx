@@ -1,63 +1,268 @@
-import Image from "next/image";
+"use client";
 
+import { useState, useEffect } from "react";
+import { Post, Comment } from "@/types";
+import { supabase } from "@/lib/client";
+import { PostCard } from "@/components/PostCard";
+import { NotificationBell } from "@/components/NotificationBell";
+import Image from "next/image";
 export default function Home() {
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // Obtener usuario actual
+  useEffect(() => {
+    const getUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setCurrentUserId(user?.id || null);
+    };
+    getUser();
+  }, []);
+
+  // Toggle like: insertar o eliminar de tabla likes
+  const handleLike = async (postId: number | string) => {
+    if (!currentUserId) return;
+
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+
+    if (post.isLiked) {
+      // Quitar like
+      const { error } = await supabase
+        .from("likes")
+        .delete()
+        .eq("user_id", currentUserId)
+        .eq("post_id", postId);
+
+      if (!error) {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? { ...p, isLiked: false, likes_count: p.likes_count - 1 }
+              : p
+          )
+        );
+      }
+    } else {
+      // Dar like
+      const { error } = await supabase
+        .from("likes")
+        .insert({ user_id: currentUserId, post_id: postId });
+
+      if (!error) {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? { ...p, isLiked: true, likes_count: p.likes_count + 1 }
+              : p
+          )
+        );
+
+        // Crear notificación via Edge Function
+        if (post.user_id !== currentUserId) {
+          supabase.functions.invoke("send-notification", {
+            body: {
+              type: "like",
+              post_id: postId,
+              actor_id: currentUserId,
+              post_owner_id: post.user_id,
+            },
+          });
+        }
+      }
+    }
+  };
+
+  // Agregar comentario
+  const handleComment = async (postId: number | string, body: string) => {
+    if (!currentUserId) return;
+
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+
+    const { data, error } = await supabase
+      .from("comments")
+      .insert({ user_id: currentUserId, post_id: postId, body })
+      .select("id, user_id, post_id, body, created_at")
+      .single();
+
+    if (!error && data) {
+      // Obtener profile del usuario actual (comentador)
+      const { data: commenterProfile } = await supabase
+        .from("profiles")
+        .select("username, avatar_url")
+        .eq("id", currentUserId)
+        .single();
+
+      const newComment: Comment = {
+        ...data,
+        profile: commenterProfile || undefined,
+      };
+
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? { ...p, comments: [...(p.comments || []), newComment] }
+            : p
+        )
+      );
+
+      // Notificar al titular del post (si no es el mismo usuario)
+      if (post.user_id !== currentUserId) {
+        // Crear notificación via Edge Function
+        supabase.functions.invoke("send-notification", {
+          body: {
+            type: "comment",
+            post_id: postId,
+            actor_id: currentUserId,
+            post_owner_id: post.user_id,
+            comment_body: body,
+          },
+        });
+
+        // Enviar email
+        fetch("/api/send-comment-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            postOwnerId: post.user_id,
+            ownerUsername: post.profile?.username || "Usuario",
+            commenterUsername: commenterProfile?.username || "Alguien",
+            commentBody: body,
+            postCaption: post.caption,
+          }),
+        }).catch((err) => console.error("Error enviando email:", err));
+      }
+    }
+  };
+
+  // Cargar posts con likes y comentarios
+  useEffect(() => {
+    const fetchPosts = async () => {
+      // 1. Obtener posts
+      const { data: postsData, error: postsError } = await supabase
+        .from("posts_new")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (postsError) {
+        console.error("Error al obtener los posts:", postsError);
+        return;
+      }
+
+      const postIds = postsData.map((p) => p.id);
+      const userIds = [...new Set(postsData.map((p) => p.user_id))];
+
+      // 2. Obtener profiles
+      const { data: profilesData } = await supabase
+        .from("profiles")
+        .select("id, username, avatar_url")
+        .in("id", userIds);
+
+      const profilesMap = new Map(
+        profilesData?.map((p) => [p.id, { username: p.username, avatar_url: p.avatar_url }]) || []
+      );
+
+      // 3. Contar likes por post
+      const { data: likesCountData } = await supabase
+        .from("likes")
+        .select("post_id")
+        .in("post_id", postIds);
+
+      const likesCountMap = new Map<string | number, number>();
+      likesCountData?.forEach((like) => {
+        const count = likesCountMap.get(like.post_id) || 0;
+        likesCountMap.set(like.post_id, count + 1);
+      });
+
+      // 4. Verificar likes del usuario actual
+      let userLikesSet = new Set<string | number>();
+      if (currentUserId) {
+        const { data: userLikesData } = await supabase
+          .from("likes")
+          .select("post_id")
+          .eq("user_id", currentUserId)
+          .in("post_id", postIds);
+
+        userLikesSet = new Set(userLikesData?.map((l) => l.post_id) || []);
+      }
+
+      // 5. Obtener comentarios
+      const { data: commentsData } = await supabase
+        .from("comments")
+        .select("id, user_id, post_id, body, created_at")
+        .in("post_id", postIds)
+        .order("created_at", { ascending: true });
+
+      // Obtener profiles de comentadores
+      const commenterIds = [...new Set(commentsData?.map((c) => c.user_id) || [])];
+      const { data: commenterProfiles } = await supabase
+        .from("profiles")
+        .select("id, username, avatar_url")
+        .in("id", commenterIds);
+
+      const commenterProfilesMap = new Map(
+        commenterProfiles?.map((p) => [p.id, { username: p.username, avatar_url: p.avatar_url }]) || []
+      );
+
+      // Agrupar comentarios por post
+      const commentsMap = new Map<string | number, Comment[]>();
+      commentsData?.forEach((comment) => {
+        const postComments = commentsMap.get(comment.post_id) || [];
+        postComments.push({
+          ...comment,
+          profile: commenterProfilesMap.get(comment.user_id),
+        });
+        commentsMap.set(comment.post_id, postComments);
+      });
+
+      // 6. Combinar todo
+      const postsWithData: Post[] = postsData.map((post) => ({
+        ...post,
+        profile: profilesMap.get(post.user_id),
+        likes_count: likesCountMap.get(post.id) || 0,
+        isLiked: userLikesSet.has(post.id),
+        comments: commentsMap.get(post.id) || [],
+      }));
+
+      setPosts(postsWithData);
+    };
+
+    fetchPosts();
+  }, [currentUserId]);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-card-bg border-b border-border">
+        
+       <div className=" flex-shrink-0 flex items-center">
+           <Image
+              src="/pnglogoxxxs.fw.png"
+              alt="Qepdev Logo"
+              width={40}
+              height={40}
+              className="navbar-brand  m-2 "
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+            Qepdevgram
+          </h1>
+          <NotificationBell />
+        </div>
+      </header>
+
+      {/* Feed de posts */}
+      <main className="max-w-lg mx-auto px-4 py-6">
+        <div className="flex flex-col gap-6">
+          {posts.map((post) => (
+            <PostCard
+              key={post.id}
+              post={post}
+              currentUserId={currentUserId}
+              onLike={handleLike}
+              onComment={handleComment}
+            />
+          ))}
         </div>
       </main>
     </div>
