@@ -245,7 +245,7 @@ export default function Home() {
               className="navbar-brand  m-2 "
             />
           <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Qepdevgram
+            Kikalequagram
           </h1>
           <NotificationBell />
         </div>
