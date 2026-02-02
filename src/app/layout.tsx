@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Qepdevgram",
+  title: "kikalequagram",
   description: "App inspirada en Instagram creada con Supabase y Next.js",
 };
 
