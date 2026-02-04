@@ -242,7 +242,7 @@ export default function Home() {
               alt="Qepdev Logo"
               width={40}
               height={40}
-              className="navbar-brand  m-2 "
+              className="navbar-brand w-auto  m-2 "
             />
           <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
             Kikalequagram

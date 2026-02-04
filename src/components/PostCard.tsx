@@ -6,7 +6,7 @@ import { PostCardProps } from "@/types";
 import { getTimeAgo } from "@/utils/time";
 import { HeartIcon } from "./HeartIcon";
 
-const DEFAULT_AVATAR = "https://xynshcnkxdliapebmyaz.supabase.co/storage/v1/object/public/images/posts/unnamed-14.jpg";
+const DEFAULT_AVATAR = "https://syqhlgfgmxqmgqdaizsy.supabase.co/storage/v1/object/public/images/profile/modernwoman.png";
 
 export function PostCard({ post, currentUserId, onLike, onComment }: PostCardProps) {
   const [commentText, setCommentText] = useState("");
@@ -31,8 +31,9 @@ export function PostCard({ post, currentUserId, onLike, onComment }: PostCardPro
             <Image
               src={avatarUrl}
               alt={username}
-              fill
-              className="object-cover"
+              width={40}
+              height={40}
+              className="object-cover w-auto"
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-lg text-foreground/40">
